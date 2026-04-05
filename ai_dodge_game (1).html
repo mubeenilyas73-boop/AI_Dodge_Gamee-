@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Dodge Game</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a14; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: monospace; color: #ccc; }
+  #hud { display: flex; gap: 24px; padding: 8px 0 6px; width: 600px; align-items: center; }
+  .hud-stat { font-size: 13px; color: #888; }
+  .hud-val { color: #eee; font-weight: 500; }
+  #canvas-wrap { position: relative; }
+  #game-canvas { border: 0.5px solid #333; border-radius: 8px; display: block; background: #0a0a14; cursor: none; }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; pointer-events: none;
+    background: rgba(10,10,20,0.82); border-radius: 8px;
+  }
+  #overlay.hidden { display: none; }
+  .ov-title { font-size: 32px; font-weight: 500; color: #ff4455; letter-spacing: 2px; }
+  .ov-sub { font-size: 14px; color: #aaa; }
+  .ov-score { font-size: 18px; color: #ffc832; font-weight: 500; }
+  .ov-btn {
+    margin-top: 8px; padding: 8px 28px; font-size: 14px; font-family: monospace;
+    background: transparent; border: 0.5px solid #50e0a0; color: #50e0a0;
+    border-radius: 8px; cursor: pointer; pointer-events: all;
+    transition: background 0.15s;
+  }
+  .ov-btn:hover { background: rgba(80,224,160,0.12); }
+  .ov-hint { font-size: 12px; color: #555; }
+  #start-overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    background: rgba(10,10,20,0.88); border-radius: 8px;
+  }
+  #start-overlay.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <span class="hud-stat">TIME <span class="hud-val" id="h-time">0s</span></span>
+  <span class="hud-stat">SCORE <span class="hud-val" id="h-score">0</span></span>
+  <span class="hud-stat">ENEMIES <span class="hud-val" id="h-enemies">0</span></span>
+  <span class="hud-stat">SPEED <span class="hud-val" id="h-speed">1.0×</span></span>
+  <span class="hud-stat" style="margin-left:auto;font-size:11px;color:#444">ARROW KEYS / WASD</span>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="game-canvas" width="600" height="460"></canvas>
+
+  <div id="start-overlay">
+    <div style="font-size:28px;font-weight:500;color:#50cfff;letter-spacing:2px">AI DODGE</div>
+    <div style="font-size:13px;color:#888">Survive as long as you can</div>
+    <button class="ov-btn" id="start-btn" style="border-color:#50cfff;color:#50cfff">START GAME</button>
+    <div style="font-size:11px;color:#444;margin-top:4px">Arrow keys or WASD to move</div>
+  </div>
+
+  <div id="overlay" class="hidden">
+    <div class="ov-title">GAME OVER</div>
+    <div class="ov-score" id="ov-score">You survived 0 seconds</div>
+    <div class="ov-sub" id="ov-final"></div>
+    <button class="ov-btn" id="restart-btn">PLAY AGAIN</button>
+    <div class="ov-hint">or press R</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game-canvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const PLAYER_R = 13, PLAYER_SPD = 3.8;
+const ENEMY_R = 11, ENEMY_BASE_SPD = 1.4, SPEED_RAMP = 0.11;
+const INIT_ENEMIES = 4, SPAWN_EVERY = 15;
+
+let state = 'idle';
+let player, enemies, keys, startTime, frameId, particles;
+
+function initGame() {
+  player = { x: W/2, y: H/2 };
+  enemies = [];
+  keys = {};
+  startTime = performance.now();
+  particles = [];
+  for (let i = 0; i < INIT_ENEMIES; i++) enemies.push(spawnEnemy(ENEMY_BASE_SPD));
+  updateHUD(0, 0, INIT_ENEMIES, ENEMY_BASE_SPD);
+}
+
+function spawnEnemy(speed) {
+  const edge = Math.floor(Math.random() * 4);
+  let x, y;
+  if (edge === 0)      { x = Math.random()*W; y = -20; }
+  else if (edge === 1) { x = Math.random()*W; y = H+20; }
+  else if (edge === 2) { x = -20; y = Math.random()*H; }
+  else                 { x = W+20; y = Math.random()*H; }
+  return { x, y, speed, trail: [] };
+}
+
+function elapsed() { return (performance.now() - startTime) / 1000; }
+function currentSpeed() { return ENEMY_BASE_SPD + SPEED_RAMP * (elapsed() / 10); }
+
+function updateHUD(t, score, ec, spd) {
+  document.getElementById('h-time').textContent = Math.floor(t) + 's';
+  document.getElementById('h-score').textContent = score;
+  document.getElementById('h-enemies').textContent = ec;
+  document.getElementById('h-speed').textContent = spd.toFixed(1) + '×';
+}
+
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+}
+
+function drawCircleGlow(x, y, r, color, glow) {
+  const grad = ctx.createRadialGradient(x, y, r*0.3, x, y, r*2.5);
+  grad.addColorStop(0, glow + '55');
+  grad.addColorStop(1, glow + '00');
+  ctx.beginPath(); ctx.arc(x, y, r*2.5, 0, Math.PI*2);
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2);
+  ctx.fillStyle = color; ctx.fill();
+}
+
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 18; i++) {
+    const angle = Math.random()*Math.PI*2;
+    const spd = 1.5 + Math.random()*4;
+    particles.push({ x, y, vx: Math.cos(angle)*spd, vy: Math.sin(angle)*spd, life: 1, color });
+  }
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 2.5*p.life, 0, Math.PI*2);
+    ctx.fillStyle = p.color; ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  particles = particles.filter(p => p.life > 0.02);
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vx *= 0.96; p.vy *= 0.96; p.life -= 0.03; });
+}
+
+function gameLoop() {
+  if (state !== 'playing') return;
+  const t = elapsed();
+  const spd = currentSpeed();
+
+  if (keys['ArrowLeft'] ||keys['a']||keys['A']) player.x -= PLAYER_SPD;
+  if (keys['ArrowRight']||keys['d']||keys['D']) player.x += PLAYER_SPD;
+  if (keys['ArrowUp']   ||keys['w']||keys['W']) player.y -= PLAYER_SPD;
+  if (keys['ArrowDown'] ||keys['s']||keys['S']) player.y += PLAYER_SPD;
+  player.x = Math.max(PLAYER_R, Math.min(W-PLAYER_R, player.x));
+  player.y = Math.max(PLAYER_R, Math.min(H-PLAYER_R, player.y));
+
+  const expected = INIT_ENEMIES + Math.floor(t / SPAWN_EVERY);
+  while (enemies.length < expected) enemies.push(spawnEnemy(spd));
+  enemies.forEach(e => e.speed = spd);
+
+  enemies.forEach(e => {
+    e.trail.push({x: e.x, y: e.y});
+    if (e.trail.length > 8) e.trail.shift();
+    const dx = player.x - e.x, dy = player.y - e.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist > 0) { e.x += (dx/dist)*e.speed; e.y += (dy/dist)*e.speed; }
+  });
+
+  for (const e of enemies) {
+    if (Math.hypot(e.x-player.x, e.y-player.y) < PLAYER_R + ENEMY_R - 4) {
+      spawnParticles(player.x, player.y, '#80d8ff');
+      spawnParticles(e.x, e.y, '#ff4455');
+      state = 'dead';
+      showGameOver(t, enemies.length);
+      break;
+    }
+  }
+
+  ctx.clearRect(0,0,W,H);
+  drawGrid();
+
+  enemies.forEach(e => {
+    e.trail.forEach((pt, i) => {
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, ENEMY_R*(i/e.trail.length)*0.7, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(255,60,80,${(i/e.trail.length)*0.25})`; ctx.fill();
+    });
+  });
+
+  enemies.forEach(e => drawCircleGlow(e.x, e.y, ENEMY_R, '#ff4455', '#ff1a2e'));
+  drawCircleGlow(player.x, player.y, PLAYER_R, '#50cfff', '#1a80cc');
+  drawParticles();
+
+  updateHUD(t, Math.floor(t*10), enemies.length, spd);
+  frameId = requestAnimationFrame(gameLoop);
+}
+
+function showGameOver(t, ec) {
+  cancelAnimationFrame(frameId);
+  let steps = 0;
+  function finishParticles() {
+    ctx.clearRect(0,0,W,H); drawGrid(); drawParticles();
+    enemies.forEach(e => drawCircleGlow(e.x, e.y, ENEMY_R, '#ff4455', '#ff1a2e'));
+    if (particles.length > 0 && steps++ < 60) requestAnimationFrame(finishParticles);
+  }
+  finishParticles();
+  document.getElementById('ov-score').textContent = `You survived ${Math.floor(t)} seconds`;
+  document.getElementById('ov-final').textContent = `Score: ${Math.floor(t*10)}  |  Enemies: ${ec}`;
+  document.getElementById('overlay').classList.remove('hidden');
+}
+
+function startGame() {
+  document.getElementById('start-overlay').classList.add('hidden');
+  document.getElementById('overlay').classList.add('hidden');
+  cancelAnimationFrame(frameId);
+  initGame();
+  state = 'playing';
+  frameId = requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if ((e.key === 'r' || e.key === 'R') && state === 'dead') startGame();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+let touchStart = null;
+canvas.addEventListener('touchstart', e => { e.preventDefault(); touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (!touchStart) return;
+  const dx = e.touches[0].clientX - touchStart.x;
+  const dy = e.touches[0].clientY - touchStart.y;
+  keys['ArrowLeft'] = dx < -10; keys['ArrowRight'] = dx > 10;
+  keys['ArrowUp'] = dy < -10; keys['ArrowDown'] = dy > 10;
+}, { passive: false });
+canvas.addEventListener('touchend', () => { keys = {}; touchStart = null; });
+
+document.getElementById('start-btn').addEventListener('click', startGame);
+document.getElementById('restart-btn').addEventListener('click', startGame);
+
+ctx.clearRect(0,0,W,H); drawGrid();
+drawCircleGlow(W/2, H/2, PLAYER_R, '#50cfff', '#1a80cc');
+</script>
+</body>
+</html>
